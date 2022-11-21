@@ -132,21 +132,16 @@ impl Thread {
     /// Close a file from the file table. It will release the POSIX advisory locks owned
     /// by current process.
     pub fn close_file(&self, fd: FileDesc) -> Result<()> {
-        let file = self.files().lock().unwrap().del(fd)?;
-        if let Some(async_file_handle) = file.as_async_file_handle() {
-            async_file_handle.release_range_locks();
-        }
+        let _file = self.files().lock().unwrap().del(fd)?;
         Ok(())
     }
 
     /// Close all files in the file table. It will release the POSIX advisory locks owned
     /// by current process.
-    pub fn close_all_files(&self) {
+    pub async fn close_all_files(&self) {
         let files = self.files().lock().unwrap().del_all();
         for file in files {
-            if let Some(async_file_handle) = file.as_async_file_handle() {
-                async_file_handle.release_range_locks();
-            }
+            file.close().await;
         }
     }
 

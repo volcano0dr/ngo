@@ -181,13 +181,6 @@ impl FileHandle {
         }
     }
 
-    pub fn as_socket_file_arc(&self) -> Option<&Arc<SocketFile>> {
-        match &self.0.file {
-            AnyFile::Socket(socket_file) => Some(socket_file),
-            _ => None,
-        }
-    }
-
     // Returns the underlying epoll file if it is one.
     pub fn as_epoll_file(&self) -> Option<&EpollFile> {
         match &self.0.file {
@@ -222,6 +215,44 @@ impl FileHandle {
             AnyFile::AsyncFileHandle(async_file_handle) => Some(async_file_handle),
             _ => None,
         }
+    }
+
+    pub async fn close(self) -> Result<()> {
+        match self.0.file {
+            // Make sure the writes of disk files persist.
+            //
+            // Currently, disk files are the only types of files
+            // that may have internal caches for updates and
+            // requires explict flushes to ensure the persist of the
+            // updates.
+            //
+            // TODO: add a general-purpose mechanism to do async drop.
+            // If we can support async drop, then there is no need to
+            // do explicit cleanup/shutdown/flush when closing fd.
+            AnyFile::Disk(disk_file) => {
+                let _ = disk_file.flush().await;
+            }
+            // Make sure the socket async request completes so that when removing from the file table,
+            // the host socket is actually dropped and closed.
+            AnyFile::Socket(socket_file) => {
+                let ref_count = Arc::strong_count(&socket_file);
+                if ref_count == 1 {
+                    // One here, one in the file table.
+                    let _ = socket_file.close().await;
+                }
+            }
+            // Make sure the async inode flushing data when being closed.
+            AnyFile::AsyncFileHandle(async_file_handle) => {
+                let inode = async_file_handle.dentry().inode();
+                if inode.as_sync_inode().is_none() {
+                    let _ = inode.sync_all().await;
+                }
+                async_file_handle.release_range_locks();
+            }
+            _ => (),
+        };
+
+        Ok(())
     }
 
     /// Downgrade the file handle to its weak counterpart.
